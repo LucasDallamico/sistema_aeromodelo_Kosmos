@@ -70,6 +70,7 @@ void loop()
     delay(10);
     moduloSd.abrirArq('w');
     Serial.println(F("OK"));
+    i = 0;
   }
   i++;
 
