@@ -1,163 +1,175 @@
 #include "MPU.h"
-/* _____________________________________________________________ */
-//               IMPLEMENTAÇÃO DA CLASSE mpuDados
-/* ------------------------------------------------------------- */
-coordenada::coordenada(void){
-  acc = 0.0; giro = 0.0; giroK = 0.0; angulo = 0.0;
-}
-coordenada::~coordenada(void){}
-/* ------------------------------------------------------------- */
-mpuDados::mpuDados(void){
-  gyroXangle = 0.0; gyroYangle = 0.0;
-  compAngleX = 0.0; compAngleY = 0.0;
-}
-mpuDados::~mpuDados(){}
-/* ------------------------------------------------------------- */
-bool mpuDados::inicia_comun_i2c(void)
+
+mpu::mpu()
 {
-  // Iniciando a comunicação I2C
-  Wire.begin();
-  #if ARDUINO >= 157
-  Wire.setClock(400000UL); // Set I2C frequency to 400kHz
-  #else
-  TWBR = ((F_CPU / 400000L) - 16) / 2; // Set I2C frequency
-  #endif
-  i2cData[0] = 7;    // Defina a taxa de amostragem para 1000Hz - 8kHz / (7 + 1) = 1000Hz
-  i2cData[1] = 0x00; // Desative o FSYNC e defina a filtragem de 260 Hz Acc, filtragem de 256 Hz Gyro, amostragem de 8 KHz
-  i2cData[2] = 0x00; // Defina a escala de escala completa do giroscópio para ≤250deg / s
-  i2cData[3] = gravidaMax2g; // Defina a escala completa do acelerômetro para ≤2g
-  while (i2cWrite(0x19, i2cData, 4, false)); // Escrever para todos os quatro registros de uma só vez
-  while (i2cWrite(0x6B, 0x01, true)); // PLL com referência ao giroscópio do eixo X e desativar o modo de suspensão
-  while (i2cRead(0x75, i2cData, 1));
-  return 1;
-}
-/* ------------------------------------------------------------- */
-bool mpuDados::sensorFunciona(void){
-  if (i2cData[0] != WHO_AM_I) { // Read "WHO_AM_I" register
-    Serial.println(F("Não foi possível inicializar o MPU !!!"));
-    while(1);
-    return 0;
-  }
-  return 1;
+  Serial.println(F("Inicializando o MPU ..."));
+  kalAngleX = 0.0; kalAngleY = 0.0; temperatura = 0.0;
+  accX = 0.0; accY = 0.0; accZ = 0.0;
 }
 
-/* ------------------------------------------------------------- */
-const float mpuDados::getAcc(char eixo){
-  if ( eixo == 'x' || eixo == 'X')
-    return x_dado.acc;
-  else if ( eixo == 'y' || eixo == 'Y')
-    return y_dado.acc;
-  else if ( eixo == 'z' || eixo == 'Z')
-    return z_dado.acc;
-  else
-    return 0;
+mpu::~mpu(){}
+
+void mpu::inicializa_sensor(void)
+{
+  i2cData[0] = 7; // Set the sample rate to 1000Hz - 8kHz/(7+1) = 1000Hz
+  i2cData[1] = 0x00; // Disable FSYNC and set 260 Hz Acc filtering, 256 Hz Gyro filtering, 8 KHz sampling
+  i2cData[2] = 0x00; // Set Gyro Full Scale Range to ±250deg/s
+  i2cData[3] = gravidaMax8g; // Seta a gravidade maxima como 8 G
+  while (i2cWrite(0x19, i2cData, 4, false)); // Write to all four registers at once
+  while (i2cWrite(0x6B, 0x01, true)); // PLL with X axis gyroscope reference and disable sleep mode
+
+  while (i2cRead(0x75, i2cData, 1));
+  if (i2cData[0] != WHO_AM_I) { // Read "WHO_AM_I" register
+    Serial.println(F("Erro na comunicação com o MPU !!!"));
+    while (1);
+  } else {
+    Serial.println(F("MPU incializado."));
+  }
+  delay(100); // Wait for sensor to stabilize
+  sets_inicias();
 }
-/* ------------------------------------------------------------- */
-const float mpuDados::getGiro(char eixo){
-  if ( eixo == 'x' || eixo == 'X')
-    return x_dado.giro;
-  else if ( eixo == 'y' || eixo == 'Y')
-    return y_dado.giro;
-  else if ( eixo == 'z' || eixo == 'Z')
-    return z_dado.giro;
-  else
-    return 0;
-}
-/* ------------------------------------------------------------- */
-void mpuDados::valoresIniciais(void){
-  /* Definir o ângulo inicial de kalman e giroscópio */
+
+void mpu::sets_inicias(void)
+{
   while (i2cRead(0x3B, i2cData, 6));
-  x_dado.acc = (int16_t)(i2cData[0] << 8) | i2cData[1];
-  y_dado.acc = (int16_t)(i2cData[2] << 8) | i2cData[3];
-  z_dado.acc = (int16_t)(i2cData[4] << 8) | i2cData[5];
+  accX = (int16_t)((i2cData[0] << 8) | i2cData[1]);
+  accY = (int16_t)((i2cData[2] << 8) | i2cData[3]);
+  accZ = (int16_t)((i2cData[4] << 8) | i2cData[5]);
 
   // Source: http://www.freescale.com/files/sensors/doc/app_note/AN3461.pdf eq. 25 and eq. 26
-  // atan2 outputs the value of -p to p (radians) - see http://en.wikipedia.org/wiki/Atan2
+  // atan2 outputs the value of -π to π (radians) - see http://en.wikipedia.org/wiki/Atan2
   // It is then converted from radians to degrees
-  // Restringe em 90 a variação do angulo
-  // Eq. 25 and 26
-  double roll  = atan2(y_dado.acc, z_dado.acc) * RAD_TO_DEG;
-  double pitch = atan(-x_dado.acc / sqrt(y_dado.acc * y_dado.acc + z_dado.acc * z_dado.acc)) * RAD_TO_DEG;
-  
-  x_dado.setAngle(roll); // Set starting angle
-  y_dado.setAngle(pitch);
-  gyroXangle = roll;
-  gyroYangle = pitch;
-  compAngleX = roll;
-  compAngleY = pitch;
+  #ifdef RESTRICT_PITCH // Eq. 25 and 26
+    double roll  = atan2(accY, accZ) * RAD_TO_DEG;
+    double pitch = atan(-accX / sqrt(accY * accY + accZ * accZ)) * RAD_TO_DEG;
+  #else // Eq. 28 and 29
+    double roll  = atan(accY / sqrt(accX * accX + accZ * accZ)) * RAD_TO_DEG;
+    double pitch = atan2(-accX, accZ) * RAD_TO_DEG;
+  #endif
+
+  kalmanX.setAngle(roll); // Set starting angle
+  kalmanY.setAngle(pitch);
+  timer = micros();
 }
 
-/* ------------------------------------------------------------- */
-void mpuDados::getValoresSensorI2C(double dt){
-  /* Atualize todos os valores */
+void mpu::get_rotacao_x_y(double *rotacaoX, double *rotacaoY, double *a_x, double *a_y, double *a_z)
+{
+  double gyroX, gyroY, gyroZ;
+  double gyroXangle, gyroYangle; // Angle calculate using the gyro only
+  double compAngleX, compAngleY; // Calculated angle using a complementary filter
+  int16_t tempRaw;
+
+  // Obtem os dados da comunicação i2C
   while (i2cRead(0x3B, i2cData, 14));
-  x_dado.acc = (int16_t)((i2cData[0] << 8) | i2cData[1]);
-  y_dado.acc = (int16_t)((i2cData[2] << 8) | i2cData[3]);
-  z_dado.acc = (int16_t)((i2cData[4] << 8) | i2cData[5]);
-  temperatura = (int16_t)(i2cData[6] << 8) | i2cData[7];
-  x_dado.giro = (int16_t)(i2cData[8] << 8) | i2cData[9];
-  y_dado.giro = (int16_t)(i2cData[10] << 8) | i2cData[11];
-  z_dado.giro = (int16_t)(i2cData[12] << 8) | i2cData[13];
+  accX = (int16_t)((i2cData[0] << 8) | i2cData[1]);
+  accY = (int16_t)((i2cData[2] << 8) | i2cData[3]);
+  accZ = (int16_t)((i2cData[4] << 8) | i2cData[5]);
+  tempRaw = (int16_t)((i2cData[6] << 8) | i2cData[7]);
+  gyroX = (int16_t)((i2cData[8] << 8) | i2cData[9]);
+  gyroY = (int16_t)((i2cData[10] << 8) | i2cData[11]);
+  gyroZ = (int16_t)((i2cData[12] << 8) | i2cData[13]);;
 
-  // Realiza a conversão para angulo
-  // roll -> fi para x
-  double roll  = atan2(y_dado.acc, z_dado.acc) * RAD_TO_DEG;
-  double pitch = atan(-x_dado.acc / sqrt(y_dado.acc * y_dado.acc + z_dado.acc * z_dado.acc)) * RAD_TO_DEG;
-  
-  double gyroXrate = x_dado.giro / 131.0; // Convert to deg/s
-  double gyroYrate = y_dado.giro / 131.0; // Convert to deg/s
+  double dt = (double)(micros() - timer) / 1000000; // Calculate delta time
+  timer = micros();
 
-  // Isso corrige o problema de transição quando o ângulo acelerômetro salta entre -180 e 180 graus
-  if ((roll < -90 && x_dado.giroK > 90) || (roll > 90 && x_dado.giroK < -90)) {
-    x_dado.setAngle(roll);
-    compAngleX = roll;
-    x_dado.giroK = roll;
-    gyroXangle = roll;
-  } else
-    x_dado.giroK = x_dado.getAngle(roll, gyroXrate, dt); // Calculate the angle using a Kalman filter
+  // Source: http://www.freescale.com/files/sensors/doc/app_note/AN3461.pdf eq. 25 and eq. 26
+  // atan2 outputs the value of -π to π (radians) - see http://en.wikipedia.org/wiki/Atan2
+  // It is then converted from radians to degrees
+  #ifdef RESTRICT_PITCH // Eq. 25 and 26
+    double roll  = atan2(accY, accZ) * RAD_TO_DEG;
+    double pitch = atan(-accX / sqrt(accY * accY + accZ * accZ)) * RAD_TO_DEG;
+  #else // Eq. 28 and 29
+    double roll  = atan(accY / sqrt(accX * accX + accZ * accZ)) * RAD_TO_DEG;
+    double pitch = atan2(-accX, accZ) * RAD_TO_DEG;
+  #endif
 
-  if (abs(x_dado.giroK) > 90)
-    gyroYrate = -gyroYrate; // Taxa de inversão, para que se ajuste à leitura restrita do acelerômetro
-  y_dado.giroK = y_dado.getAngle(pitch, gyroYrate, dt);
+  double gyroXrate = gyroX / 131.0; // Convert to deg/s
+  double gyroYrate = gyroY / 131.0; // Convert to deg/s
 
-  gyroXangle += gyroXrate * dt; // Calcular o ângulo do giroscópio sem nenhum filtro
+  #ifdef RESTRICT_PITCH
+    // This fixes the transition problem when the accelerometer angle jumps between -180 and 180 degrees
+    if ((roll < -90 && kalAngleX > 90) || (roll > 90 && kalAngleX < -90)) {
+      kalmanX.setAngle(roll);
+      compAngleX = roll;
+      kalAngleX = roll;
+      gyroXangle = roll;
+    } else
+      kalAngleX = kalmanX.getAngle(roll, gyroXrate, dt); // Calculate the angle using a Kalman filter
+
+    if (abs(kalAngleX) > 90)
+      gyroYrate = -gyroYrate; // Invert rate, so it fits the restriced accelerometer reading
+    kalAngleY = kalmanY.getAngle(pitch, gyroYrate, dt);
+  #else
+    // This fixes the transition problem when the accelerometer angle jumps between -180 and 180 degrees
+    if ((pitch < -90 && kalAngleY > 90) || (pitch > 90 && kalAngleY < -90)) {
+      kalmanY.setAngle(pitch);
+      compAngleY = pitch;
+      kalAngleY = pitch;
+      gyroYangle = pitch;
+    } else
+      kalAngleY = kalmanY.getAngle(pitch, gyroYrate, dt); // Calculate the angle using a Kalman filter
+
+    if (abs(kalAngleY) > 90)
+      gyroXrate = -gyroXrate; // Invert rate, so it fits the restriced accelerometer reading
+    kalAngleX = kalmanX.getAngle(roll, gyroXrate, dt); // Calculate the angle using a Kalman filter
+  #endif
+
+  gyroXangle += gyroXrate * dt; // Calculate gyro angle without any filter
   gyroYangle += gyroYrate * dt;
+  //gyroXangle += kalmanX.getRate() * dt; // Calculate gyro angle using the unbiased rate
+  //gyroYangle += kalmanY.getRate() * dt;
 
-
-  compAngleX = 0.93 * (compAngleX + gyroXrate * dt) + 0.07 * roll; // Calcular o ângulo usando um filtro complementar
+  compAngleX = 0.93 * (compAngleX + gyroXrate * dt) + 0.07 * roll; // Calculate the angle using a Complimentary filter
   compAngleY = 0.93 * (compAngleY + gyroYrate * dt) + 0.07 * pitch;
 
-  // Redefina o ângulo do giroscópio quando ele deriva demais
+  // Reset the gyro angle when it has drifted too much
   if (gyroXangle < -180 || gyroXangle > 180)
-    gyroXangle = x_dado.giroK;
+    gyroXangle = kalAngleX;
   if (gyroYangle < -180 || gyroYangle > 180)
-    gyroYangle = y_dado.giroK;
+    gyroYangle = kalAngleY;
+
+  // Temperatura
+  temperatura = (double)tempRaw / 340.0 + 36.53;
+  
+  // Retornar os valores de rotação x e y
+  if (rotacaoX)
+    *rotacaoX = kalAngleX;
+  if (rotacaoY)
+    *rotacaoY = kalAngleY;
+
+  // Retornar os valores de aceleração x,y,z
+  if (a_x)
+    *a_x = accX;
+  if (a_y)
+    *a_y = accY;
+  if (a_z)
+    *a_z = accZ;
+}
+    
+void mpu::imprime_valores_rotacao(void)
+{
+  Serial.print(F("Valores rotacao X e Y = "));
+  Serial.print(kalAngleX);
+  Serial.print(F(" "));
+  Serial.println(kalAngleY);
 }
 
-/* ------------------------------------------------------------- */
-void mpuDados::printSemfiltro(void){
-  Serial.print(x_dado.acc); Serial.print("\t");
-  Serial.print(y_dado.acc); Serial.print("\t");
-  Serial.print(z_dado.acc); Serial.print("\t");
-  Serial.print(x_dado.giro); Serial.print("\t");
-  Serial.print(y_dado.giro); Serial.print("\t");
-  Serial.print(z_dado.giro); Serial.print("\t");
-  Serial.print("\t");
+void mpu::imprime_valores_aceleracao(void)
+{
+  Serial.print(F("Valores aceleração [x,y,z] = "));
+  Serial.print(accX);
+  Serial.print(F(" "));
+  Serial.print(accY);
+  Serial.print(F(" "));
+  Serial.println(accZ);
 }
 
-/* ------------------------------------------------------------- */
-void mpuDados::printComfiltro(void){
-  //Serial.print(x_dado.acc); Serial.print("\t");
-  //Serial.print(y_dado.acc); Serial.print("\t");
-  //Serial.print(z_dado.acc); Serial.print("\t");
-  Serial.print(x_dado.giroK); Serial.print("\t");
-  Serial.print(y_dado.giroK); Serial.print("\t");
-  Serial.print("\t");
-}
-
-/* ------------------------------------------------------------- */
-String mpuDados::vetDadosparaAnalise(void){
-  String mens;
-  mens = (String)((float)x_dado.acc) + "," + (String)((float)y_dado.acc) + "," + (String)((float)z_dado.acc) + "," + (String)((float)x_dado.giroK) + "," + (String)((float)y_dado.giroK);
+String mpu::retorna_valores_p_registro(void)
+{
+  String mens = {""};
+  // Escreve as rotações X e Y
+  mens = (String)((float)kalAngleX) + "," + (String)((float)kalAngleY);
+  // Escrever as acelerações x,y,z 
+  mens += "," + (String)((float)accX) + "," + (String)((float)accY) + "," + (String)((float)accZ);
   return mens;
 }
