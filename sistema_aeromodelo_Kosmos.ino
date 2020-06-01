@@ -38,6 +38,7 @@ void setup()
   #if ARDUINO >= 157
     Wire.setClock(400000UL); // Set I2C frequency to 400kHz
   #else
+    // Tensiny 4
     TWBR = ((F_CPU / 400000UL) - 16) / 2; // Set I2C frequency to 400kHz
   #endif
 
